@@ -102,6 +102,16 @@ export const routes: Readonly<RouteRecordType[]> = [
                   back: '/resources/applications/list'
                 }
               },
+              // {
+              //   path: '/topology/:pathId',
+              //   name: 'applicationDomain.topology',
+              //   component: () => import('../views/resources/applications/tabs/topology.vue'),
+              //   meta: {
+              //     tab: true,
+              //     icon: 'tabler:topology-ring',
+              //     back: '/resources/applications/list'
+              //   }
+              // },
               {
                 path: '/instance/:pathId',
                 name: 'applicationDomain.instance',
@@ -288,6 +298,16 @@ export const routes: Readonly<RouteRecordType[]> = [
               //     back: '/resources/services/list'
               //   }
               // },
+              {
+                path: '/topology/:pathId/:group?/:version?',
+                name: 'topology',
+                component: () => import('../views/resources/services/tabs/topology.vue'),
+                meta: {
+                  tab: true,
+                  icon: 'tabler:topology-ring',
+                  back: '/resources/services/list'
+                }
+              },
               {
                 path: '/monitor/:pathId/:group?/:version?',
                 name: 'monitor',
