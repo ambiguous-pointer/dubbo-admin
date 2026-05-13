@@ -14,66 +14,36 @@
   ~ See the License for the specific language governing permissions and
   ~ limitations under the License.
 -->
+
 <template>
-  <div class="__container_services_tabs_event">
-    <a-card class="timeline-container">
-      <a-timeline class="timeline">
-        <a-timeline-item>
-          <template #dot><MinusCircleOutlined style="font-size: 18px" /></template>
-        </a-timeline-item>
-        <a-timeline-item v-for="(item, index) in eventData" :key="index">
-          <a-tag class="time" :color="PRIMARY_COLOR">{{ item.time }}</a-tag>
-          <span class="description">{{ item.description }}</span>
-        </a-timeline-item>
-        <a-timeline-item>
-          <template #dot></template>
-          <span>过期事件不会存储</span>
-        </a-timeline-item>
-      </a-timeline>
-    </a-card>
-  </div>
+  <EventTimeline :events="eventList" :loading="loading" />
 </template>
 
-<script setup lang="ts">
-import { PRIMARY_COLOR } from '@/base/constants'
-import { MinusCircleOutlined } from '@ant-design/icons-vue'
+<script lang="ts" setup>
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { useMeshStore } from '@/stores/mesh'
+import { listServiceEvent } from '@/api/service/service'
+import EventTimeline from '@/components/EventTimeline.vue'
+import type { EventItem } from '@/types/api'
 
-let __null = PRIMARY_COLOR
-const eventData = [
-  {
-    time: '2022-01-01',
-    description: 'description'
-  },
-  {
-    time: '2022-01-02',
-    description: 'description'
-  },
-  {
-    time: '2022-01-03',
-    description: 'description'
-  },
-  {
-    time: '2022-01-04',
-    description: 'description'
-  },
-  {
-    time: '2022-01-05',
-    description: 'description'
-  }
-]
-</script>
+const route = useRoute()
+const meshStore = useMeshStore()
 
-<style lang="less" scoped>
-.__container_services_tabs_event {
-  display: flex;
-  .timeline-container {
-    width: 100%;
-    .timeline {
-      margin-left: 30px;
-      .description {
-        font-size: 18px;
-      }
+const eventList = ref<EventItem[]>([])
+const loading = ref(false)
+
+onMounted(async () => {
+  loading.value = true
+  try {
+    const serviceName = (route.params.pathId as string) || ''
+    const mesh = meshStore.mesh || 'default'
+    const res = await listServiceEvent({ serviceName, mesh })
+    if (res?.data?.list) {
+      eventList.value = res.data.list
     }
+  } finally {
+    loading.value = false
   }
-}
-</style>
+})
+</script>

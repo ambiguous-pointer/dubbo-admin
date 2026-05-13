@@ -108,6 +108,21 @@ export const getInstanceTrafficSwitchAPI = (instanceIP: string, appName: string)
  * @param appName
  * @param trafficDisable
  */
+export const listInstanceEvent = (params: {
+  instanceName?: string
+  ip?: string
+  appName?: string
+  mesh?: string
+  pageOffset?: number
+  pageSize?: number
+}): Promise<any> => {
+  return request({
+    url: '/instance/event',
+    method: 'get',
+    params
+  })
+}
+
 export const updateInstanceTrafficSwitchAPI = (
   instanceIP: string,
   appName: string,

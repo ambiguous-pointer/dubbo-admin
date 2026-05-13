@@ -16,11 +16,35 @@
 -->
 
 <template>
-  <div>event todo</div>
+  <EventTimeline :events="eventList" :loading="loading" />
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue'
-</script>
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { useMeshStore } from '@/stores/mesh'
+import { listInstanceEvent } from '@/api/service/instance'
+import EventTimeline from '@/components/EventTimeline.vue'
+import type { EventItem } from '@/types/api'
 
-<style lang="less" scoped></style>
+const route = useRoute()
+const meshStore = useMeshStore()
+
+const eventList = ref<EventItem[]>([])
+const loading = ref(false)
+
+onMounted(async () => {
+  loading.value = true
+  try {
+    const instanceName = (route.params.name as string) || ''
+    const ip = (route.params.pathId as string) || ''
+    const mesh = meshStore.mesh || 'default'
+    const res = await listInstanceEvent({ instanceName, ip, mesh })
+    if (res?.data?.list) {
+      eventList.value = res.data.list
+    }
+  } finally {
+    loading.value = false
+  }
+})
+</script>
