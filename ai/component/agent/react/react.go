@@ -28,6 +28,7 @@ import (
 	"dubbo-admin-ai/component/agent"
 	"dubbo-admin-ai/component/hooks"
 	"dubbo-admin-ai/component/memory"
+	"dubbo-admin-ai/component/models"
 	rt "dubbo-admin-ai/runtime"
 	"dubbo-admin-ai/schema"
 	conversationstore "dubbo-admin-ai/store"
@@ -52,6 +53,10 @@ type ReActAgent struct {
 	toolTimeouts toolTimeoutResolver
 	hookManager  *hooks.Manager
 	model        string
+	// compat holds the endpoint's request-shaping quirks, resolved once at
+	// construction so every model call in the loop spells the same fields the
+	// same way.
+	compat models.ResolvedCompat
 
 	maxIterations int
 	callTimeout   time.Duration
@@ -84,17 +89,19 @@ func (s *interactionState) cancelPersistence() {
 // per-interaction hot path only executes them. It returns an error if the
 // configured prompt file is missing.
 func NewReActAgent(g *genkit.Genkit, spec *AgentSpec, toolTimeouts toolTimeoutResolver, hookManager *hooks.Manager, toolRefs []ai.ToolRef) (*ReActAgent, error) {
-	return NewReActAgentWithStore(g, nil, spec, toolTimeouts, hookManager, toolRefs)
+	return NewReActAgentWithStore(g, nil, spec, toolTimeouts, hookManager, toolRefs, models.ResolveCompat(nil, nil))
 }
 
-// NewReActAgentWithStore shares conversation storage with memory and tools.
-func NewReActAgentWithStore(g *genkit.Genkit, messageStore conversationstore.MessageStore, spec *AgentSpec, toolTimeouts toolTimeoutResolver, hookManager *hooks.Manager, toolRefs []ai.ToolRef) (*ReActAgent, error) {
+// NewReActAgentWithStore shares conversation storage with memory and tools, and
+// applies the model's resolved compatibility settings to every request.
+func NewReActAgentWithStore(g *genkit.Genkit, messageStore conversationstore.MessageStore, spec *AgentSpec, toolTimeouts toolTimeoutResolver, hookManager *hooks.Manager, toolRefs []ai.ToolRef, compat models.ResolvedCompat) (*ReActAgent, error) {
 	ra := &ReActAgent{
 		registry:      g,
 		messageStore:  messageStore,
 		toolTimeouts:  toolTimeouts,
 		hookManager:   hookManager,
 		model:         spec.Model,
+		compat:        compat,
 		maxIterations: spec.MaxIterations,
 		callTimeout:   time.Duration(spec.Timeout) * time.Second,
 		bufferSize:    max(spec.ChannelBufferSize, 1),
