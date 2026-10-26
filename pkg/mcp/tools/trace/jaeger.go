@@ -20,6 +20,7 @@ package trace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,6 +146,9 @@ func (p *jaegerProvider) GetTraceByID(ctx context.Context, traceID string) (*Tra
 	resp, err := p.client.Do(req)
 	if err != nil {
 		p.logFailure(traceID, startedAt, 0, "transport", err)
+		// The tool result keeps the transport error as it is: the result enters
+		// the model context and the model has to be able to answer which lookup
+		// failed and why. The failure log is sanitized instead.
 		return nil, fmt.Errorf("jaeger trace query failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -182,6 +186,218 @@ func (p *jaegerProvider) GetTraceByID(ctx context.Context, traceID string) (*Tra
 	result := normalizeJaegerTrace(upstream.Data[0])
 	logger.Sugar().Infow("trace query completed", "provider", p.config.Name, "engine", p.config.Type, "trace_id", maskedTraceID(traceID), "elapsed_ms", time.Since(startedAt).Milliseconds(), "spans", result.SpanCount, "services", result.ServiceCount, "error_spans", result.ErrorSpanCount, "truncated", result.Truncated)
 	return result, nil
+}
+
+// SearchTraces discovers candidate traces through the Jaeger v1 query API.
+// The summaries are computed from the raw spans so that no information is lost to
+// the normalization applied by the single trace lookup.
+func (p *jaegerProvider) SearchTraces(ctx context.Context, query TraceSearchQuery) (*TraceSearchResult, error) {
+	if strings.TrimSpace(query.Service) == "" {
+		return nil, fmt.Errorf("service is required for trace search")
+	}
+	values := url.Values{}
+	values.Set("service", query.Service)
+	if query.Operation != "" {
+		values.Set("operation", query.Operation)
+	}
+	if query.TraceID != "" {
+		values.Set("traceID", query.TraceID)
+	}
+	if len(query.Tags) > 0 {
+		encoded, err := json.Marshal(query.Tags)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode trace search tags: %w", err)
+		}
+		values.Set("tags", string(encoded))
+	}
+	if !query.StartTime.IsZero() {
+		values.Set("start", strconv.FormatInt(query.StartTime.UnixMicro(), 10))
+	}
+	if !query.EndTime.IsZero() {
+		values.Set("end", strconv.FormatInt(query.EndTime.UnixMicro(), 10))
+	}
+	if query.MinDuration > 0 {
+		values.Set("minDuration", strconv.FormatInt(query.MinDuration.Microseconds(), 10))
+	}
+	if query.Limit > 0 {
+		values.Set("limit", strconv.Itoa(query.Limit))
+	}
+
+	endpoint := *p.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/traces"
+	endpoint.RawQuery = values.Encode()
+	startedAt := time.Now()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create jaeger search request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if p.config.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.config.BearerToken)
+	}
+	if p.config.Tenant != "" {
+		req.Header.Set(tenantHeader, p.config.Tenant)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logSearchFailure(query, startedAt, 0, "transport", err)
+		// The tool result keeps the transport error as it is: the result enters
+		// the model context and the model has to be able to answer which lookup
+		// failed and why. The failure log is sanitized instead.
+		return nil, fmt.Errorf("jaeger trace search failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxTraceErrorBodyBytes))
+		p.logSearchFailure(query, startedAt, resp.StatusCode, "upstream_status", nil)
+		return nil, fmt.Errorf("jaeger trace search failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, err := readTraceBody(resp.Body)
+	if err != nil {
+		p.logSearchFailure(query, startedAt, resp.StatusCode, "response_limit", err)
+		return nil, err
+	}
+	var upstream jaegerResponse
+	if err := json.Unmarshal(body, &upstream); err != nil {
+		p.logSearchFailure(query, startedAt, resp.StatusCode, "decode", err)
+		return nil, fmt.Errorf("failed to decode jaeger search response: %w", err)
+	}
+	if len(upstream.Errors) > 0 {
+		p.logSearchFailure(query, startedAt, resp.StatusCode, "upstream_error", nil)
+		return nil, fmt.Errorf("jaeger trace search failed: %s", upstream.Errors[0].Message)
+	}
+	result := summarizeJaegerTraces(upstream.Data)
+	logger.Sugar().Infow("trace search completed", "provider", p.config.Name, "engine", p.config.Type, "service", query.Service, "elapsed_ms", time.Since(startedAt).Milliseconds(), "traces", len(result.Traces), "total", result.Total, "truncated", result.Truncated)
+	return result, nil
+}
+
+// jaegerTraceSummary keeps the numeric start time next to the summary so the result
+// can be ordered on the absolute timeline instead of on the formatted timestamp.
+type jaegerTraceSummary struct {
+	summary     TraceSummary
+	startMicros int64
+}
+
+// summarizeJaegerTraces converts the raw traces into bounded per-trace summaries.
+func summarizeJaegerTraces(traces []jaegerTrace) *TraceSearchResult {
+	result := &TraceSearchResult{Total: len(traces), Traces: []TraceSummary{}, SourceEngine: "jaeger"}
+	summaries := make([]jaegerTraceSummary, 0, len(traces))
+	for _, trace := range traces {
+		summary, startMicros := summarizeJaegerTrace(trace)
+		summaries = append(summaries, jaegerTraceSummary{summary: summary, startMicros: startMicros})
+	}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].startMicros != summaries[j].startMicros {
+			return summaries[i].startMicros < summaries[j].startMicros
+		}
+		return summaries[i].summary.TraceID < summaries[j].summary.TraceID
+	})
+	if len(summaries) > maxSearchTraceSummaries {
+		summaries = summaries[:maxSearchTraceSummaries]
+		result.Truncated = true
+	}
+	for _, item := range summaries {
+		result.Traces = append(result.Traces, item.summary)
+	}
+	return result
+}
+
+// summarizeJaegerTrace derives the summary of one trace from all of its raw spans.
+func summarizeJaegerTrace(input jaegerTrace) (TraceSummary, int64) {
+	summary := TraceSummary{TraceID: input.TraceID}
+	services := map[string]struct{}{}
+	var minStart, maxEnd int64
+	hasStart := false
+	var rootSpan jaegerSpan
+	hasRoot := false
+	genai := false
+	// The span ids of the trace decide which spans are roots: a span whose parent
+	// is not part of the trace is an orphan and roots the trace on its own.
+	spanIDs := make(map[string]struct{}, len(input.Spans))
+	for _, rawSpan := range input.Spans {
+		if rawSpan.SpanID != "" {
+			spanIDs[rawSpan.SpanID] = struct{}{}
+		}
+	}
+	for _, rawSpan := range input.Spans {
+		process := input.Processes[rawSpan.ProcessID]
+		if rawSpan.Process != nil {
+			process = *rawSpan.Process
+		}
+		if process.ServiceName != "" {
+			services[process.ServiceName] = struct{}{}
+		}
+		if errorSpan, _ := spanStatus(rawSpan.Tags); errorSpan {
+			summary.ErrorSpanCount++
+		}
+		if hasGenAIJaegerTags(rawSpan.Tags) {
+			genai = true
+		}
+		if !hasStart || rawSpan.StartTime < minStart {
+			minStart = rawSpan.StartTime
+			hasStart = true
+		}
+		if end := rawSpan.StartTime + rawSpan.Duration; end > maxEnd {
+			maxEnd = end
+		}
+		if isJaegerRootSpan(rawSpan, spanIDs) && (!hasRoot || betterJaegerRoot(rawSpan, rootSpan)) {
+			rootSpan = rawSpan
+			hasRoot = true
+			summary.RootService = process.ServiceName
+			summary.RootOperation = rawSpan.OperationName
+		}
+	}
+	summary.SpanCount = len(input.Spans)
+	summary.ServiceCount = len(services)
+	summary.HasError = summary.ErrorSpanCount > 0
+	if hasStart {
+		summary.StartTime = jaegerMicrosTime(minStart)
+		summary.DurationMicros = maxEnd - minStart
+	}
+	if genai {
+		summary.TraceKind = "genai"
+	}
+	return summary, minStart
+}
+
+// isJaegerRootSpan reports whether the span roots the trace. A span is a root when
+// it has no parent reference at all, or when the referenced parent is not part of
+// the trace. The latter happens for orphans whose parent was dropped by the
+// sampling or by the span limit. The analyzer uses the same rule, so the search
+// summary and the diagnosis agree on the root of a trace.
+func isJaegerRootSpan(rawSpan jaegerSpan, spanIDs map[string]struct{}) bool {
+	parentID := parentSpanID(rawSpan.References)
+	if parentID == "" {
+		return true
+	}
+	_, present := spanIDs[parentID]
+	return !present
+}
+
+// betterJaegerRoot prefers the root span that finishes last, because that span
+// determines the end of the request.
+func betterJaegerRoot(candidate, current jaegerSpan) bool {
+	candidateEnd := candidate.StartTime + candidate.Duration
+	currentEnd := current.StartTime + current.Duration
+	if candidateEnd != currentEnd {
+		return candidateEnd > currentEnd
+	}
+	if candidate.Duration != current.Duration {
+		return candidate.Duration > current.Duration
+	}
+	return candidate.SpanID < current.SpanID
+}
+
+// hasGenAIJaegerTags detects generative AI attributes on raw provider tags without
+// allocating a normalized attribute map.
+func hasGenAIJaegerTags(tags []jaegerKeyValue) bool {
+	for _, tag := range tags {
+		if isGenAIAttributeKey(tag.Key) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeJaegerTrace(input jaegerTrace) *Trace {
@@ -394,13 +610,64 @@ func truncateUTF8(value string, limit int) (string, bool) {
 	return value, true
 }
 
+// logFailure records a failed trace query. The error is sanitized, because the
+// design document section 10 only allows the provider name, the service name, the
+// elapsed time, the error type and the upstream status code in a failure log: the
+// query payload must never be logged.
 func (p *jaegerProvider) logFailure(traceID string, startedAt time.Time, status int, errorType string, err error) {
 	fields := []any{"provider", p.config.Name, "engine", p.config.Type, "trace_id", maskedTraceID(traceID), "elapsed_ms", time.Since(startedAt).Milliseconds(), "error_type", errorType}
 	if status != 0 {
 		fields = append(fields, "upstream_status", status)
 	}
-	if err != nil {
-		fields = append(fields, "error", err)
+	if sanitized := sanitizeTransportError(err); sanitized != nil {
+		fields = append(fields, "error", sanitized)
 	}
 	logger.Sugar().Warnw("trace query failed", fields...)
+}
+
+// logSearchFailure records a failed search. The query payload and the credentials
+// are deliberately left out so the log never leaks the lookup filters. The service
+// name is kept because it is the only anchor of the failed lookup, but the error
+// is sanitized because it would otherwise repeat the whole request URL.
+func (p *jaegerProvider) logSearchFailure(query TraceSearchQuery, startedAt time.Time, status int, errorType string, err error) {
+	fields := []any{"provider", p.config.Name, "engine", p.config.Type, "service", query.Service, "elapsed_ms", time.Since(startedAt).Milliseconds(), "error_type", errorType}
+	if query.TraceID != "" {
+		fields = append(fields, "trace_id", maskedTraceID(query.TraceID))
+	}
+	if status != 0 {
+		fields = append(fields, "upstream_status", status)
+	}
+	if sanitized := sanitizeTransportError(err); sanitized != nil {
+		fields = append(fields, "error", sanitized)
+	}
+	logger.Sugar().Warnw("trace search failed", fields...)
+}
+
+// TODO: the tool result currently returns the upstream error text unchanged, and
+// that text can contain the retrieval conditions, for example the request URL
+// with the service, the operation and the trace identifier. The tool result
+// itself can also carry sensitive data, such as user identifiers or business
+// data of the returned spans. A production deployment has to decide per
+// deployment scenario whether the tool result is filtered or redacted. That
+// mechanism is not implemented yet, this round only records the decision.
+
+// sanitizeTransportError removes the request URL from a transport failure.
+// http.Client.Do reports transport problems as *url.Error, whose message embeds
+// the full request URL including the query string. The query carries the caller's
+// filters and may contain business identifiers or secrets, so only the inner
+// error is kept: it still explains the failure ("dial tcp ...: connection refused")
+// without repeating the payload. The function guards the failure logs only, the
+// tool result keeps the original error.
+func sanitizeTransportError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err == nil {
+			return nil
+		}
+		return urlErr.Err
+	}
+	return err
 }
