@@ -67,19 +67,14 @@ var interactionSequence atomic.Uint64
 
 var ErrAgentStopping = errors.New("agent is stopping")
 
-const persistenceTimeout = 30 * time.Second
+// persistenceTimeout bounds a single persistence write. It is a variable so
+// that tests can exercise the case of an interaction that runs longer than
+// the write budget without waiting for the real timeout.
+var persistenceTimeout = 30 * time.Second
 
 type interactionState struct {
-	turnID        uint64
-	messages      []*ai.Message
-	persistCtx    context.Context
-	persistCancel context.CancelFunc
-}
-
-func (s *interactionState) cancelPersistence() {
-	if s != nil && s.persistCancel != nil {
-		s.persistCancel()
-	}
+	turnID   uint64
+	messages []*ai.Message
 }
 
 // NewReActAgent builds a ReActAgent, assembling its prompts up front so the
@@ -228,7 +223,6 @@ func (ra *ReActAgent) Interact(parent context.Context, input *schema.UserInput, 
 				}
 				cancel()
 			}
-			state.cancelPersistence()
 		}()
 
 		interactionState = &interactionTrace{
@@ -242,7 +236,10 @@ func (ra *ReActAgent) Interact(parent context.Context, input *schema.UserInput, 
 			return
 		}
 		if ra.messageStore != nil {
-			if err := ra.messageStore.NextTurnForTurn(state.persistCtx, sessionID, state.turnID); err != nil {
+			writeCtx, cancel := persistenceWriteContext(ctx)
+			err := ra.messageStore.NextTurnForTurn(writeCtx, sessionID, state.turnID)
+			cancel()
+			if err != nil {
 				interactionErr = fmt.Errorf("failed to complete turn: %w", err)
 				chans.ErrorChan <- interactionErr
 				return
@@ -321,12 +318,19 @@ func (ra *ReActAgent) newInteraction(parent context.Context, input *schema.UserI
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to begin turn: %w", err)
 		}
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(parent), persistenceTimeout)
+		// The persistence context carries the conversation values for the whole
+		// interaction. It deliberately has no deadline of its own: an
+		// interaction can easily run longer than persistenceTimeout (several
+		// model calls plus tool calls), and a deadline that expired
+		// mid-interaction made the tool results, the final answer and the turn
+		// close all fail. The turn was then aborted as a whole, and the next
+		// question in that session started without any history. Every write
+		// takes its own bounded deadline through persistenceWriteContext.
+		persistCtx := context.WithoutCancel(parent)
 		if err := ra.messageStore.AddHistoryToTurn(parent, sessionID, turnID, ai.NewUserMessage(ai.NewTextPart(input.Content))); err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), persistenceTimeout)
 			abortErr := ra.messageStore.AbortTurnForTurn(cleanupCtx, sessionID, turnID)
 			cancel()
-			persistCancel()
 			if abortErr != nil && !errors.Is(abortErr, conversationstore.ErrTurnNotFound) {
 				return nil, nil, fmt.Errorf("failed to record user message: %w (also failed to abort turn: %v)", err, abortErr)
 			}
@@ -337,13 +341,12 @@ func (ra *ReActAgent) newInteraction(parent context.Context, input *schema.UserI
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), persistenceTimeout)
 			abortErr := ra.messageStore.AbortTurnForTurn(cleanupCtx, sessionID, turnID)
 			cancel()
-			persistCancel()
 			if abortErr != nil && !errors.Is(abortErr, conversationstore.ErrTurnNotFound) {
 				return nil, nil, fmt.Errorf("failed to load conversation context: %w (also failed to abort turn: %v)", err, abortErr)
 			}
 			return nil, nil, fmt.Errorf("failed to load conversation context: %w", err)
 		}
-		state := &interactionState{turnID: turnID, messages: messages, persistCtx: persistCtx, persistCancel: persistCancel}
+		state := &interactionState{turnID: turnID, messages: messages}
 		ctx := context.WithValue(parent, sessionIDContextKey, sessionID)
 		ctx = context.WithValue(ctx, turnIDContextKey, turnID)
 		ctx = context.WithValue(ctx, persistenceContextKey, persistCtx)

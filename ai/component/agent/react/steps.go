@@ -219,7 +219,10 @@ func (ra *ReActAgent) execTools(ctx context.Context, history *memory.HistoryMemo
 	message := ai.NewMessage(ai.RoleModel, nil, parts...)
 	if ra.messageStore != nil {
 		turnID, _ := ctx.Value(turnIDContextKey).(uint64)
-		if err := ra.messageStore.AddHistoryToTurn(persistenceContext(ctx), s.Session, turnID, message); err != nil {
+		writeCtx, cancel := persistenceWriteContext(ctx)
+		err := ra.messageStore.AddHistoryToTurn(writeCtx, s.Session, turnID, message)
+		cancel()
+		if err != nil {
 			return nil, fmt.Errorf("failed to record tool output: %w", err)
 		}
 	} else {
@@ -235,8 +238,17 @@ func (ra *ReActAgent) finish(ctx context.Context, chans *agent.Channels, history
 	if answer != "" {
 		message := ai.NewMessage(ai.RoleModel, nil, ai.NewTextPart(answer))
 		if ra.messageStore != nil {
-			if err := ra.messageStore.AddHistoryToTurn(persistenceContext(ctx), sessionID, turnID, message); err != nil {
-				return fmt.Errorf("failed to persist final answer: %w", err)
+			writeCtx, cancel := persistenceWriteContext(ctx)
+			err := ra.messageStore.AddHistoryToTurn(writeCtx, sessionID, turnID, message)
+			cancel()
+			if err != nil {
+				// The answer was produced, so a storage failure must not hide it
+				// from the user. Degrade the history instead: the turn still
+				// closes and keeps the rest of the conversation, and the next
+				// question is not answered as if the session had never
+				// started.
+				runtime.GetLogger().Error("react: failed to persist final answer",
+					"session_id", sessionID, "turn_id", turnID, "error", err)
 			}
 		} else {
 			history.AddHistory(sessionID, message)
@@ -280,6 +292,19 @@ func persistenceContext(ctx context.Context) context.Context {
 		return state
 	}
 	return ctx
+}
+
+// persistenceWriteContext derives the context for a single persistence write.
+//
+// The deadline is per write, not per interaction. The shared persistence
+// context lives for the whole interaction, so a deadline anchored at the
+// start of the interaction would be consumed by the model calls and tool
+// calls that run before the write happens. The write then failed with a
+// context deadline error even though the store itself was healthy.
+//
+// The returned cancel must be called once the write is done.
+func persistenceWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(persistenceContext(ctx)), persistenceTimeout)
 }
 
 // withTimeout wraps ctx with a deadline when timeout > 0; otherwise it returns

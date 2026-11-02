@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"dubbo-admin-ai/component/memory"
 
@@ -40,6 +41,9 @@ type scriptPrompt struct {
 	errs     []error
 	calls    int
 	messages [][]*ai.Message
+	// delay makes the prompt take longer than the persistence budget, which
+	// is how a slow interaction used to lose its final answer and its turn.
+	delay time.Duration
 }
 
 func (s *scriptPrompt) Name() string { return "script" }
@@ -52,6 +56,9 @@ func (s *scriptPrompt) Execute(ctx context.Context, opts ...ai.PromptExecuteOpti
 	}
 	i := s.calls
 	s.calls++
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
 	var err error
 	if i < len(s.errs) {
 		err = s.errs[i]

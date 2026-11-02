@@ -106,7 +106,6 @@ func TestNewInteractionBuildsStableContextSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newInteraction() error = %v", err)
 	}
-	defer state.cancelPersistence()
 	defer func() { _ = store.AbortTurnForTurn(context.Background(), "snapshot-session", state.turnID) }()
 
 	if got, want := messageTextList(state.messages), []string{"first question", "first answer", "follow-up"}; fmt.Sprint(got) != fmt.Sprint(want) {
@@ -155,7 +154,6 @@ func TestRunAppendsToolOutputToContextSnapshotWithoutReloading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newInteraction() error = %v", err)
 	}
-	defer state.cancelPersistence()
 	defer func() { _ = baseStore.AbortTurnForTurn(context.Background(), "tool-snapshot-session", state.turnID) }()
 
 	if _, err := ra.run(interactionCtx, nil, state, &interactionTrace{}); err != nil {
@@ -280,5 +278,140 @@ func assertNoStoredMessages(t *testing.T, store conversationstore.Store, session
 	}
 	if len(messages) != 0 {
 		t.Fatalf("failed interaction left messages behind: %#v", messages)
+	}
+}
+
+// A persistence write must not inherit the deadline of the interaction. The
+// shared persistence context lives for the whole interaction, so an
+// interaction that runs longer than persistenceTimeout — several model calls
+// plus tool calls — used to find its deadline expired. The tool results, the
+// final answer and the turn close then all failed, the turn was aborted as a
+// whole, and the next question in that session was answered as if the
+// conversation had never started.
+func TestPersistenceWriteContextOutlivesTheSharedContext(t *testing.T) {
+	shared, cancelShared := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancelShared()
+	<-shared.Done()
+
+	ctx := context.WithValue(context.Background(), persistenceContextKey, shared)
+	writeCtx, cancel := persistenceWriteContext(ctx)
+	defer cancel()
+	if err := writeCtx.Err(); err != nil {
+		t.Fatalf("write context is already dead: %v", err)
+	}
+	deadline, ok := writeCtx.Deadline()
+	if !ok {
+		t.Fatal("write context has no deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > persistenceTimeout {
+		t.Fatalf("write deadline in %v, want a fresh deadline within persistenceTimeout", remaining)
+	}
+}
+
+// A storage failure must not hide the answer from the user. The answer was
+// produced, so it is streamed, and the turn still closes so that the next
+// question in the session keeps the rest of the conversation.
+func TestFinalAnswerIsDeliveredWhenPersistenceFails(t *testing.T) {
+	base := memorystore.NewMemoryStore(2)
+	createAgentSession(t, base, "answer-failure-session")
+	// The user message is the first write and the final answer the second.
+	store := &failingMessageStore{Store: base, failOn: 2}
+
+	script := &scriptPrompt{resps: []*ai.ModelResponse{textResp("answer that must reach the user")}}
+	ra := &ReActAgent{
+		registry:      genkit.Init(context.Background()),
+		messageStore:  store,
+		actPrompt:     script,
+		answerPrompt:  script,
+		maxIterations: 1,
+		bufferSize:    8,
+	}
+
+	channels := ra.Interact(context.Background(), &schema.UserInput{Content: "hello"}, "answer-failure-session")
+	var delivered strings.Builder
+	for {
+		select {
+		case feedback := <-channels.UserRespChan:
+			delivered.WriteString(feedback.Text())
+		case err := <-channels.ErrorChan:
+			t.Fatalf("interaction failed: %v", err)
+		case <-channels.Done():
+			goto done
+		}
+	}
+
+done:
+	if !strings.Contains(delivered.String(), "answer that must reach the user") {
+		t.Fatalf("the user did not receive the answer: %q", delivered.String())
+	}
+	// The turn must still close, otherwise the next question in this session
+	// starts without the history of this one.
+	messages, err := base.AllMemory(context.Background(), "answer-failure-session")
+	if err != nil {
+		t.Fatalf("AllMemory() error = %v", err)
+	}
+	if len(messages) == 0 {
+		t.Fatal("the turn was dropped, so the next question loses the conversation")
+	}
+}
+
+// An interaction that runs longer than the persistence budget must still keep
+// its turn. Before the fix the shared persistence context carried a deadline
+// that the model calls and tool calls consumed, so the final answer and the
+// turn close both failed, the turn was aborted as a whole, and the next
+// question in that session was answered without any history.
+func TestSlowInteractionKeepsItsTurnForTheNextQuestion(t *testing.T) {
+	previous := persistenceTimeout
+	persistenceTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { persistenceTimeout = previous })
+
+	store := memorystore.NewMemoryStore(4)
+	createAgentSession(t, store, "slow-turn-session")
+
+	slow := &scriptPrompt{resps: []*ai.ModelResponse{textResp("slow answer")}, delay: 300 * time.Millisecond}
+	ra := &ReActAgent{
+		registry:           genkit.Init(context.Background()),
+		messageStore:       store,
+		actPrompt:          slow,
+		answerPrompt:       slow,
+		maxIterations:      1,
+		bufferSize:         8,
+		contextWindowTurns: 5,
+	}
+
+	channels := ra.Interact(context.Background(), &schema.UserInput{Content: "first question"}, "slow-turn-session")
+	for {
+		select {
+		case <-channels.UserRespChan:
+		case err := <-channels.ErrorChan:
+			t.Fatalf("the slow interaction failed: %v", err)
+		case <-channels.Done():
+			goto done
+		}
+	}
+
+done:
+	// The second question must see the first turn.
+	fast := &scriptPrompt{resps: []*ai.ModelResponse{textResp("second answer")}}
+	ra.actPrompt = fast
+	ra.answerPrompt = fast
+	channels = ra.Interact(context.Background(), &schema.UserInput{Content: "second question"}, "slow-turn-session")
+	for {
+		select {
+		case <-channels.UserRespChan:
+		case err := <-channels.ErrorChan:
+			t.Fatalf("the second interaction failed: %v", err)
+		case <-channels.Done():
+			goto afterSecond
+		}
+	}
+
+afterSecond:
+	if len(fast.messages) == 0 {
+		t.Fatal("the second interaction did not reach the model")
+	}
+	got := messageTextList(fast.messages[0])
+	if len(got) == 0 || got[0] != "first question" {
+		t.Fatalf("the second question did not see the first turn: %v", got)
 	}
 }
