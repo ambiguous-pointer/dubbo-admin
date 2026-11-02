@@ -20,6 +20,7 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +97,29 @@ func TestApplyReasoningPolicyTruncatesReasoningContent(t *testing.T) {
 func TestApplyReasoningPolicyKeepsFullReasoning(t *testing.T) {
 	if got := ApplyReasoningPolicy(reasoningDocument, CaptureFull); got != reasoningDocument {
 		t.Fatalf("document = %s, want it unchanged", got)
+	}
+}
+
+func TestApplyReasoningPolicyRemovesEscapedReasoningParts(t *testing.T) {
+	// The type discriminator may be escaped in the JSON document. The raw bytes
+	// of the document then do not hold the word "reasoning", so a plain string
+	// search would skip the document and the reasoning content would reach the
+	// trace unchanged. The escape below decodes to "reasoning".
+	escapedType := fmt.Sprintf("%c%c%04x", '\\', 'u', 'r') + "easoning"
+	document := `[{"role":"assistant","parts":[{"type":"text","content":"the answer"},{"type":"` + escapedType + `","content":"the secret"}]}]`
+	if strings.Contains(document, reasoningPartType) {
+		t.Fatalf("the test document has to hide the type discriminator: %s", document)
+	}
+	filtered := ApplyReasoningPolicy(document, CaptureNone)
+	messages := decodeReasoningDocument(t, filtered)
+	if len(messages) != 1 || len(messages[0].Parts) != 1 {
+		t.Fatalf("filtered document = %s, want a single text part", filtered)
+	}
+	if messages[0].Parts[0]["type"] != "text" {
+		t.Fatalf("remaining part = %v, want the text part", messages[0].Parts[0])
+	}
+	if strings.Contains(filtered, "secret") {
+		t.Fatalf("filtered document still holds the reasoning content: %s", filtered)
 	}
 }
 

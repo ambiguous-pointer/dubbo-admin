@@ -80,9 +80,11 @@ func normalizeCaptureReasoning(policy string) (string, error) {
 // traversal only relies on the "parts" array and the "type" discriminator so
 // it does not depend on the remaining message fields.
 func rewriteReasoningParts(document string, rewrite func(element map[string]any) bool) string {
-	if !strings.Contains(document, reasoningPartType) {
-		return document
-	}
+	// The document is decoded before the parts are inspected. A plain string
+	// search for the type discriminator would be bypassed by JSON escapes: the
+	// raw bytes of "type":"reasoning" do not contain the word "reasoning", so
+	// the policy would not be applied and the reasoning content would reach the
+	// trace unchanged.
 	decoder := json.NewDecoder(strings.NewReader(document))
 	// Numbers keep their original notation so a rewritten document stays
 	// faithful to the captured payload.
