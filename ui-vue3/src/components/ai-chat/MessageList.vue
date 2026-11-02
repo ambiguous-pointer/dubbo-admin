@@ -1,26 +1,58 @@
-<template>
-    <div class="flex-1 space-y-6 overflow-y-auto rounded-xl bg-white p-4 text-sm leading-6 text-slate-900 sm:text-base sm:leading-7"
-        ref="messagesScrollContainer" style="height: calc(100vh - 200px); max-height: 90%">
-        <template v-if="messages.length === 0">
-            <div class="flex flex-col items-center justify-center h-full gap-4">
-                <h1 class="text-2xl font-bold">{{ labels.title }}</h1>
-                <p class="text-gray-500">
-                    {{ labels.welcomeMessage }}
-                </p>
-                <p class="text-lg text-amber-300 font-medium">{{ labels.welcomeTagline }}</p>
-                <div class="grid grid-cols-2 gap-4 w-full max-w-2xl mt-4">
-                    <SuggestionCard v-for="(suggestion, index) in suggestions" :key="index" :suggestion="suggestion"
-                        @click="handleSuggestionClick" />
-                </div>
-            </div>
-        </template>
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one or more
+  ~ contributor license agreements.  See the NOTICE file distributed with
+  ~ this work for additional information regarding copyright ownership.
+  ~ The ASF licenses this file to You under the Apache License, Version 2.0
+  ~ (the "License"); you may not use this file except in compliance with
+  ~ the License.  You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+-->
 
-        <template v-else>
-            <MessageItem v-for="msg in messages" :key="msg.id" :message="msg" :is-ai-thinking="isAiThinking"
-                :is-loading="isLoading" :messages="messages" :labels="labels"
-                @retry-last-message="retryLastMessage" :md="md" />
-        </template>
-    </div>
+<template>
+  <div
+    class="flex-1 space-y-6 overflow-y-auto rounded-xl bg-white p-4 text-sm leading-6 text-slate-900 sm:text-base sm:leading-7"
+    ref="messagesScrollContainer"
+    style="height: calc(100vh - 200px); max-height: 90%"
+  >
+    <template v-if="messages.length === 0">
+      <div class="flex flex-col items-center justify-center h-full gap-4">
+        <h1 class="text-2xl font-bold">{{ labels.title }}</h1>
+        <p class="text-gray-500">
+          {{ labels.welcomeMessage }}
+        </p>
+        <p class="text-lg text-amber-300 font-medium">{{ labels.welcomeTagline }}</p>
+        <div class="grid grid-cols-2 gap-4 w-full max-w-2xl mt-4">
+          <SuggestionCard
+            v-for="(suggestion, index) in suggestions"
+            :key="index"
+            :suggestion="suggestion"
+            @click="handleSuggestionClick"
+          />
+        </div>
+      </div>
+    </template>
+
+    <template v-else>
+      <MessageItem
+        v-for="msg in messages"
+        :key="msg.id"
+        :message="msg"
+        :is-ai-thinking="isAiThinking"
+        :is-loading="isLoading"
+        :messages="messages"
+        :labels="labels"
+        @retry-last-message="retryLastMessage"
+        :md="md"
+      />
+    </template>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -31,19 +63,19 @@ import SuggestionCard from './SuggestionCard.vue'
 
 // 定义props
 const props = defineProps<{
-    messages: ChatMessage[]
-    isAiThinking: boolean
-    isLoading: boolean
-    lastUserMessage: string
-    md: any
-    labels: AIChatLabels
-    suggestions: ChatSuggestion[]
+  messages: ChatMessage[]
+  isAiThinking: boolean
+  isLoading: boolean
+  lastUserMessage: string
+  md: any
+  labels: AIChatLabels
+  suggestions: ChatSuggestion[]
 }>()
 
 // 定义emits
 const emit = defineEmits<{
-    (e: 'retryLastMessage'): void
-    (e: 'suggestionClick', suggestion: string): void
+  (e: 'retryLastMessage'): void
+  (e: 'suggestionClick', suggestion: string): void
 }>()
 
 // 消息滚动容器的引用
@@ -51,34 +83,34 @@ const messagesScrollContainer = ref<HTMLElement | null>(null)
 
 // 滚动到底部的函数
 const scrollToBottom = async () => {
-    await nextTick() // 确保 DOM 更新完成
-    if (messagesScrollContainer.value) {
-        messagesScrollContainer.value.scrollTo({
-            top: messagesScrollContainer.value.scrollHeight,
-            behavior: 'smooth'
-        })
-    }
+  await nextTick() // 确保 DOM 更新完成
+  if (messagesScrollContainer.value) {
+    messagesScrollContainer.value.scrollTo({
+      top: messagesScrollContainer.value.scrollHeight,
+      behavior: 'smooth'
+    })
+  }
 }
 
 // 监听消息列表变化，自动滚动到底部
 watch(
-    () => props.messages,
-    scrollToBottom,
-    { deep: true } // 深度监听，捕获消息内容的变化
+  () => props.messages,
+  scrollToBottom,
+  { deep: true } // 深度监听，捕获消息内容的变化
 )
 
 // 重试上一条消息
 const retryLastMessage = () => {
-    emit('retryLastMessage')
+  emit('retryLastMessage')
 }
 
 // 处理建议问题的点击
 const handleSuggestionClick = (suggestion: string) => {
-    emit('suggestionClick', suggestion)
+  emit('suggestionClick', suggestion)
 }
 
 // 定义暴露给父组件的方法
 defineExpose({
-    scrollToBottom
+  scrollToBottom
 })
 </script>

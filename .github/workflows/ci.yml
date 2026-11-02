@@ -19,9 +19,11 @@ on:
   push:
     branches:
       - develop
+      - ai
   pull_request:
     branches:
       - develop
+      - ai
 
 jobs:
   license-check:

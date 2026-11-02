@@ -53,7 +53,7 @@ const router = useRouter()
 const agentDrawerOpen = ref<boolean>(false)
 
 const openAgentDrawer = () => {
-    agentDrawerOpen.value = true
+  agentDrawerOpen.value = true
 }
 </script>
 
@@ -91,7 +91,6 @@ const openAgentDrawer = () => {
 </template>
 
 <style lang="less">
-
 .__global_float_button_question {
   right: 24px;
 }

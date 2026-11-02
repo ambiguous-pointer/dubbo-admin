@@ -1,60 +1,96 @@
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one or more
+  ~ contributor license agreements.  See the NOTICE file distributed with
+  ~ this work for additional information regarding copyright ownership.
+  ~ The ASF licenses this file to You under the Apache License, Version 2.0
+  ~ (the "License"); you may not use this file except in compliance with
+  ~ the License.  You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+-->
+
 <template>
-    <div :class="{
-        'flex items-start': message.role === 'assistant' && message.type !== 'error',
-        'flex flex-row-reverse items-start': message.role === 'user',
-        'flex justify-center': message.type === 'error'
-    }">
-        <img v-if="message.role === 'assistant' && message.type !== 'error'" class="mr-2 h-8 w-8 rounded-full"
-            src="https://dummyimage.com/128x128/fde3cf/f56a00&text=AI" />
-        <img v-else-if="message.role === 'user'" class="ml-2 h-8 w-8 rounded-full"
-            src="https://dummyimage.com/128x128/87d068/ffffff&text=U" />
+  <div
+    :class="{
+      'flex items-start': message.role === 'assistant' && message.type !== 'error',
+      'flex flex-row-reverse items-start': message.role === 'user',
+      'flex justify-center': message.type === 'error'
+    }"
+  >
+    <img
+      v-if="message.role === 'assistant' && message.type !== 'error'"
+      class="mr-2 h-8 w-8 rounded-full"
+      src="https://dummyimage.com/128x128/fde3cf/f56a00&text=AI"
+    />
+    <img
+      v-else-if="message.role === 'user'"
+      class="ml-2 h-8 w-8 rounded-full"
+      src="https://dummyimage.com/128x128/87d068/ffffff&text=U"
+    />
 
-        <div :class="{
-            'flex flex-col rounded-xl bg-[#0000000f] text-[#000000e0] p-4 max-w-[480px] break-words':
-                message.role === 'assistant' && message.type !== 'error',
-            'flex h-fit rounded-xl bg-[#0000000f] text-[#000000e0] p-4 max-w-[480px] break-words':
-                message.role === 'user',
-            'flex flex-col rounded-xl bg-red-50 border border-red-200 text-red-800 p-4 min-w-[480px] max-w-[480px] break-words':
-                message.type === 'error'
-        }">
-            <template v-if="message.role === 'assistant'">
-                <template v-if="message === messages[messages.length - 1] && isAiThinking && !message.content">
-                    <div class="flex items-center text-gray-400 text-sm">
-                        <LoadingOutlined class="mr-2" />
-                        <span class="animate-pulse">{{ labels.thinking }}</span>
-                    </div>
-                </template>
-                <template v-else-if="message.type === 'error'">
-                    <div class="flex flex-col">
-                        <div class="flex items-center text-red-500 text-sm mb-2">
-                            <span class="mr-2">❌</span>
-                            <span class="font-medium">{{ labels.errorTitle }}</span>
-                        </div>
-                        <div class="text-red-600 text-sm mb-3 whitespace-pre-wrap">{{ message.content }}</div>
-                        <div class="flex justify-end">
-                            <a-button size="small" type="primary" @click="retryLastMessage" :loading="isLoading"
-                                class="flex items-center">
-                                <RedoOutlined v-if="!isLoading" class="mr-1" />
-                                {{ labels.retry }}
-                            </a-button>
-                        </div>
-                    </div>
-                </template>
+    <div
+      :class="{
+        'flex flex-col rounded-xl bg-[#0000000f] text-[#000000e0] p-4 max-w-[480px] break-words':
+          message.role === 'assistant' && message.type !== 'error',
+        'flex h-fit rounded-xl bg-[#0000000f] text-[#000000e0] p-4 max-w-[480px] break-words':
+          message.role === 'user',
+        'flex flex-col rounded-xl bg-red-50 border border-red-200 text-red-800 p-4 min-w-[480px] max-w-[480px] break-words':
+          message.type === 'error'
+      }"
+    >
+      <template v-if="message.role === 'assistant'">
+        <template
+          v-if="message === messages[messages.length - 1] && isAiThinking && !message.content"
+        >
+          <div class="flex items-center text-gray-400 text-sm">
+            <LoadingOutlined class="mr-2" />
+            <span class="animate-pulse">{{ labels.thinking }}</span>
+          </div>
+        </template>
+        <template v-else-if="message.type === 'error'">
+          <div class="flex flex-col">
+            <div class="flex items-center text-red-500 text-sm mb-2">
+              <span class="mr-2">❌</span>
+              <span class="font-medium">{{ labels.errorTitle }}</span>
+            </div>
+            <div class="text-red-600 text-sm mb-3 whitespace-pre-wrap">{{ message.content }}</div>
+            <div class="flex justify-end">
+              <a-button
+                size="small"
+                type="primary"
+                @click="retryLastMessage"
+                :loading="isLoading"
+                class="flex items-center"
+              >
+                <RedoOutlined v-if="!isLoading" class="mr-1" />
+                {{ labels.retry }}
+              </a-button>
+            </div>
+          </div>
+        </template>
 
-                <div v-else-if="message.content" class="markdown-body">
-                    <div v-html="md.render(message.content)"></div>
-                    <div v-if="message === messages[messages.length - 1] && isAiThinking"
-                        class="flex items-center text-gray-400 text-xs mt-2">
-                        <LoadingOutlined class="mr-1" />
-                        <span class="animate-pulse">{{ labels.thinking }}</span>
-                    </div>
-                </div>
-            </template>
-            <template v-else>
-                <p class="whitespace-pre-wrap">{{ message.content }}</p>
-            </template>
+        <div v-else-if="message.content" class="markdown-body">
+          <div v-html="md.render(message.content)"></div>
+          <div
+            v-if="message === messages[messages.length - 1] && isAiThinking"
+            class="flex items-center text-gray-400 text-xs mt-2"
+          >
+            <LoadingOutlined class="mr-1" />
+            <span class="animate-pulse">{{ labels.thinking }}</span>
+          </div>
         </div>
+      </template>
+      <template v-else>
+        <p class="whitespace-pre-wrap">{{ message.content }}</p>
+      </template>
     </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -63,21 +99,21 @@ import type { AIChatLabels, ChatMessage } from './types'
 
 // 定义props
 defineProps<{
-    message: ChatMessage
-    isAiThinking: boolean
-    isLoading: boolean
-    messages: ChatMessage[]
-    md: any
-    labels: AIChatLabels
+  message: ChatMessage
+  isAiThinking: boolean
+  isLoading: boolean
+  messages: ChatMessage[]
+  md: any
+  labels: AIChatLabels
 }>()
 
 // 定义emits
 const emit = defineEmits<{
-    (e: 'retryLastMessage'): void
+  (e: 'retryLastMessage'): void
 }>()
 
 // 重试上一条消息
 const retryLastMessage = () => {
-    emit('retryLastMessage')
+  emit('retryLastMessage')
 }
 </script>

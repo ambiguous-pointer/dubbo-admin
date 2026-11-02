@@ -188,14 +188,14 @@ func extractAppInstances(result *model.SearchPaginationResult) []any {
 	for _, inst := range instances {
 		if inst != nil {
 			resultSlice = append(resultSlice, map[string]any{
-				"name":             inst.Name,
-				"ip":               inst.IP,
-				"appName":          inst.AppName,
-				"deployState":      inst.DeployState,
-				"registerState":    inst.RegisterState,
-				"workloadName":     inst.WorkloadName,
-				"createTime":       inst.CreateTime,
-				"registerTime":     inst.RegisterTime,
+				"name":          inst.Name,
+				"ip":            inst.IP,
+				"appName":       inst.AppName,
+				"deployState":   inst.DeployState,
+				"registerState": inst.RegisterState,
+				"workloadName":  inst.WorkloadName,
+				"createTime":    inst.CreateTime,
+				"registerTime":  inst.RegisterTime,
 			})
 		}
 	}

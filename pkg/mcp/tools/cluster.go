@@ -20,8 +20,8 @@ package tools
 import (
 	consolectx "github.com/apache/dubbo-admin/pkg/console/context"
 	"github.com/apache/dubbo-admin/pkg/console/counter"
-	"github.com/apache/dubbo-admin/pkg/mcp/common"
 	meshresource "github.com/apache/dubbo-admin/pkg/core/resource/apis/mesh/v1alpha1"
+	"github.com/apache/dubbo-admin/pkg/mcp/common"
 )
 
 // GetClusterInfo 获取集群基本信息

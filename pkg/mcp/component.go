@@ -18,8 +18,8 @@
 package mcp
 
 import (
-	consolectx "github.com/apache/dubbo-admin/pkg/console/context"
 	"github.com/apache/dubbo-admin/pkg/config/app"
+	consolectx "github.com/apache/dubbo-admin/pkg/console/context"
 	"github.com/apache/dubbo-admin/pkg/core/runtime"
 )
 
